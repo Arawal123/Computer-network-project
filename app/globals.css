@@ -25,6 +25,16 @@ body {
   @apply backdrop-blur-xl border border-white/10 shadow-soft;
 }
 
+@layer utilities {
+  .bg-panel-glass\/80 {
+    background-image: linear-gradient(
+      135deg,
+      rgba(20, 28, 48, 0.92),
+      rgba(10, 14, 30, 0.78)
+    );
+  }
+}
+
 .neon-divider {
   background: linear-gradient(90deg, rgba(82, 247, 255, 0.8), rgba(255, 94, 219, 0.4), rgba(123, 92, 255, 0.8));
   height: 1px;
