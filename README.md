@@ -7,6 +7,7 @@ A production-ready, client-only Next.js 14 demo for teaching network routing con
 - Clickable topology: select links to tune, nodes to set endpoints.
 - Auto-rerouting, demo scenario narration, and 10-second chaos mode.
 - Live delivery/latency metrics plus an on-canvas delivery trend chart.
+- Global server selection (CDN/Anycast) with region latency awareness.
 - Deterministic random seed for reproducible teaching demos.
 
 ## Run locally
@@ -37,6 +38,7 @@ No environment variables or server setup required.
 - **Blank screen**: Ensure you are running `npm install` before `npm run dev`.
 - **Build errors**: Confirm you are on Node 18+ and that no files were moved outside the `/app` directory.
 - **Canvas not animating**: Make sure the browser allows requestAnimationFrame and hardware acceleration.
+- **Global routing paused**: Ensure “Global Server Routing” is enabled in the control panel.
 
 ---
 

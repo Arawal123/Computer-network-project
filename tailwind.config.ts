@@ -11,6 +11,10 @@ const config: Config = {
         "neon-cyan": "#52f7ff",
         "neon-pink": "#ff5edb",
         "neon-purple": "#7b5cff",
+        "signal-green": "#4ade80",
+        "signal-yellow": "#facc15",
+        "signal-red": "#fb7185",
+        "signal-gray": "#94a3b8",
         "night": "#0b0f1f",
         "night-2": "#12182d"
       },

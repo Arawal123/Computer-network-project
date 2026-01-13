@@ -1,10 +1,20 @@
-import { Link, MetricsSnapshot, Node, Packet, SimulationSettings } from "./types";
+import {
+  Link,
+  MetricsSnapshot,
+  Node,
+  Packet,
+  SimulationSettings,
+  User,
+  WorldRegion
+} from "./types";
 import { clamp, mulberry32 } from "./utils";
 
 export interface SimulationConfig {
   width: number;
   height: number;
   seed: number;
+  onIncident?: (message: string, severity: "INFO" | "WARN" | "CRIT") => void;
+  onReroute?: (message: string) => void;
 }
 
 interface RouteResult {
@@ -16,6 +26,7 @@ export class NetworkSimulation {
   nodes: Node[] = [];
   links: Link[] = [];
   packets: Packet[] = [];
+  users: User[] = [];
   rng: () => number;
   width: number;
   height: number;
@@ -24,6 +35,12 @@ export class NetworkSimulation {
   destinationId: string;
   autoReroute = true;
   showPaths = true;
+  globalRouting = true;
+
+  private onIncident?: (message: string, severity: "INFO" | "WARN" | "CRIT") => void;
+  private onReroute?: (message: string) => void;
+  private nextUserId = 0;
+  private serverLoadBoost: Record<string, number> = {};
 
   private lastPacketId = 0;
   private lastSpawn = 0;
@@ -40,10 +57,13 @@ export class NetworkSimulation {
     this.width = config.width;
     this.height = config.height;
     this.rng = mulberry32(config.seed);
+    this.onIncident = config.onIncident;
+    this.onReroute = config.onReroute;
     this.nodes = this.createNodes();
     this.links = this.createLinks();
     this.sourceId = this.nodes[0].id;
     this.destinationId = this.nodes[this.nodes.length - 1].id;
+    this.users = this.createUsers();
   }
 
   reset(seed = 1234) {
@@ -51,6 +71,9 @@ export class NetworkSimulation {
     this.nodes = this.createNodes();
     this.links = this.createLinks();
     this.packets = [];
+    this.nextUserId = 0;
+    this.serverLoadBoost = {};
+    this.users = this.createUsers();
     this.lastPacketId = 0;
     this.lastSpawn = 0;
     this.packetsSent = 0;
@@ -69,6 +92,7 @@ export class NetworkSimulation {
     this.autoReroute = settings.autoReroute;
     this.showPaths = settings.showPaths;
     this.rng = mulberry32(settings.seed);
+    this.globalRouting = settings.globalRouting;
   }
 
   setSource(id: string) {
@@ -83,6 +107,29 @@ export class NetworkSimulation {
     const target = this.links.find((link) => link.id === linkId);
     if (!target) return;
     Object.assign(target, changes);
+  }
+
+  setServerStatus(serverId: string, isUp: boolean) {
+    const target = this.nodes.find((node) => node.id === serverId);
+    if (target && target.type === "SERVER") {
+      target.isUp = isUp;
+      this.onIncident?.(
+        `${target.label} ${isUp ? "restored" : "down"} — reroute triggered.`,
+        isUp ? "INFO" : "CRIT"
+      );
+      this.onReroute?.(
+        `${target.label} ${isUp ? "restored" : "down"} — reroute triggered.`
+      );
+    }
+  }
+
+  addServerLoad(serverId: string, extraLoad: number) {
+    this.serverLoadBoost[serverId] =
+      (this.serverLoadBoost[serverId] ?? 0) + extraLoad;
+    this.onIncident?.(
+      `Manual load injected on ${serverId} (+${extraLoad}).`,
+      "WARN"
+    );
   }
 
   randomizeTopology() {
@@ -142,6 +189,7 @@ export class NetworkSimulation {
     }
 
     this.updatePackets(delta);
+    this.updateUsers(delta);
     this.updateMetrics(delta, path.path.length);
   }
 
@@ -154,6 +202,45 @@ export class NetworkSimulation {
       this.packetsDelivered === 0
         ? 0
         : this.latencySum / this.packetsDelivered;
+    const userCountsByServer: Record<string, number> = {};
+    const avgLatencyByRegion: Record<WorldRegion, number> = {
+      INDIA: 0,
+      USA: 0,
+      EUROPE: 0,
+      ASIA_PACIFIC: 0
+    };
+    const regionCounts: Record<WorldRegion, number> = {
+      INDIA: 0,
+      USA: 0,
+      EUROPE: 0,
+      ASIA_PACIFIC: 0
+    };
+    const serverHealth: Record<string, "UP" | "DOWN" | "DEGRADED"> = {};
+
+    const servers = this.nodes.filter((node) => node.type === "SERVER");
+    servers.forEach((server) => {
+      userCountsByServer[server.id] = 0;
+      const capacity = server.capacity ?? 0;
+      const currentLoad = server.currentLoad ?? 0;
+      if (!server.isUp) serverHealth[server.id] = "DOWN";
+      else if (capacity > 0 && currentLoad / capacity > 0.9)
+        serverHealth[server.id] = "DEGRADED";
+      else serverHealth[server.id] = "UP";
+    });
+
+    this.users.forEach((user) => {
+      if (user.connectedServerId) {
+        userCountsByServer[user.connectedServerId] =
+          (userCountsByServer[user.connectedServerId] ?? 0) + 1;
+      }
+      regionCounts[user.region] += 1;
+      avgLatencyByRegion[user.region] += user.lastLatency;
+    });
+
+    (Object.keys(avgLatencyByRegion) as WorldRegion[]).forEach((region) => {
+      const count = regionCounts[region];
+      avgLatencyByRegion[region] = count === 0 ? 0 : avgLatencyByRegion[region] / count;
+    });
 
     return {
       deliveryRate,
@@ -162,7 +249,10 @@ export class NetworkSimulation {
       dropped: this.packetsDropped,
       delivered: this.packetsDelivered,
       bestPathLength: this.computeBestPath().path.length,
-      history: this.history
+      history: this.history,
+      userCountsByServer,
+      avgLatencyByRegion,
+      serverHealth
     };
   }
 
@@ -250,6 +340,60 @@ export class NetworkSimulation {
       alive.push(packet);
     }
     this.packets = alive;
+  }
+
+  private updateUsers(delta: number) {
+    if (!this.globalRouting) return;
+    const servers = this.nodes.filter((node) => node.type === "SERVER");
+    servers.forEach((server) => {
+      server.currentLoad = this.serverLoadBoost[server.id] ?? 0;
+    });
+
+    for (const user of this.users) {
+      const { serverId, cost } = this.selectBestServer(user.region);
+      if (serverId && user.connectedServerId !== serverId) {
+        const message = `Reroute: ${user.region} → ${serverId} (best cost ${Math.round(
+          cost
+        )}ms)`;
+        this.onIncident?.(message, "INFO");
+        this.onReroute?.(message);
+        user.connectedServerId = serverId;
+      } else if (!serverId && user.connectedServerId) {
+        this.onIncident?.(
+          `Server unavailable for ${user.region} — users waiting.`,
+          "WARN"
+        );
+        user.connectedServerId = null;
+      }
+
+      if (user.connectedServerId) {
+        const server = servers.find((node) => node.id === user.connectedServerId);
+        if (server) {
+          server.currentLoad = (server.currentLoad ?? 0) + 1;
+          const baseLatency = this.getRegionLatency(user.region, server.region);
+          const load = server.currentLoad ?? 0;
+          const capacity = server.capacity ?? 1;
+          const congestionPenalty = Math.max(0, (load / capacity - 0.7) * 120);
+          user.lastLatency = baseLatency + congestionPenalty;
+        }
+      } else {
+        user.lastLatency = 0;
+      }
+    }
+
+    const overloaded = servers.filter(
+      (server) =>
+        server.isUp &&
+        server.capacity &&
+        server.currentLoad &&
+        server.currentLoad / server.capacity > 0.95
+    );
+    if (overloaded.length > 0 && this.rng() < delta * 0.5) {
+      this.onIncident?.(
+        `Server load high on ${overloaded[0].id} — rerouting users.`,
+        "WARN"
+      );
+    }
   }
 
   private updateMetrics(delta: number, pathLength: number) {
@@ -343,14 +487,77 @@ export class NetworkSimulation {
     return { path: pathLinks, cost: costs[this.destinationId] };
   }
 
+  selectBestServer(userRegion: WorldRegion) {
+    const servers = this.nodes.filter((node) => node.type === "SERVER");
+    let best: { serverId: string | null; cost: number } = {
+      serverId: null,
+      cost: Infinity
+    };
+
+    for (const server of servers) {
+      if (!server.isUp || !server.region) continue;
+      // CDN/Anycast: users connect to the server with lowest latency + congestion cost.
+      const baseLatency = this.getRegionLatency(userRegion, server.region);
+      const capacity = server.capacity ?? 1;
+      const load = server.currentLoad ?? 0;
+      const congestionPenalty = Math.max(0, (load / capacity) * 120);
+      const cost = baseLatency + congestionPenalty;
+      if (cost < best.cost) {
+        best = { serverId: server.id, cost };
+      }
+    }
+
+    return best;
+  }
+
+  getRegionLatency(from: WorldRegion, to: WorldRegion) {
+    const matrix: Record<WorldRegion, Record<WorldRegion, number>> = {
+      INDIA: { INDIA: 30, USA: 250, EUROPE: 150, ASIA_PACIFIC: 90 },
+      USA: { USA: 35, INDIA: 250, EUROPE: 120, ASIA_PACIFIC: 180 },
+      EUROPE: { EUROPE: 35, INDIA: 150, USA: 120, ASIA_PACIFIC: 160 },
+      ASIA_PACIFIC: { ASIA_PACIFIC: 40, INDIA: 90, USA: 180, EUROPE: 160 }
+    };
+    return matrix[from][to];
+  }
+
   private createNodes(): Node[] {
     return [
-      { id: "A", label: "Router A", x: 0.1, y: 0.25 },
-      { id: "B", label: "Router B", x: 0.35, y: 0.15 },
-      { id: "C", label: "Router C", x: 0.6, y: 0.2 },
-      { id: "D", label: "Router D", x: 0.2, y: 0.55 },
-      { id: "E", label: "Router E", x: 0.5, y: 0.6 },
-      { id: "F", label: "Router F", x: 0.8, y: 0.45 }
+      { id: "A", label: "Router A", x: 0.1, y: 0.25, type: "ROUTER" },
+      { id: "B", label: "Router B", x: 0.35, y: 0.15, type: "ROUTER" },
+      {
+        id: "C",
+        label: "Server Europe",
+        x: 0.6,
+        y: 0.2,
+        type: "SERVER",
+        region: "EUROPE",
+        capacity: 140,
+        currentLoad: 0,
+        isUp: true
+      },
+      { id: "D", label: "Router D", x: 0.2, y: 0.55, type: "ROUTER" },
+      {
+        id: "E",
+        label: "Server India",
+        x: 0.5,
+        y: 0.6,
+        type: "SERVER",
+        region: "INDIA",
+        capacity: 160,
+        currentLoad: 0,
+        isUp: true
+      },
+      {
+        id: "F",
+        label: "Server USA",
+        x: 0.8,
+        y: 0.45,
+        type: "SERVER",
+        region: "USA",
+        capacity: 150,
+        currentLoad: 0,
+        isUp: true
+      }
     ];
   }
 
@@ -379,5 +586,22 @@ export class NetworkSimulation {
       ...link,
       baseWeight: 1 + index * 0.4
     }));
+  }
+
+  private createUsers(): User[] {
+    const regions: WorldRegion[] = ["INDIA", "USA", "EUROPE", "ASIA_PACIFIC"];
+    const users: User[] = [];
+    regions.forEach((region) => {
+      const count = region === "INDIA" ? 60 : region === "USA" ? 45 : 35;
+      for (let i = 0; i < count; i += 1) {
+        users.push({
+          userId: this.nextUserId++,
+          region,
+          connectedServerId: null,
+          lastLatency: 0
+        });
+      }
+    });
+    return users;
   }
 }

@@ -1,10 +1,19 @@
 export type NodeId = string;
 
+export type WorldRegion = "INDIA" | "USA" | "EUROPE" | "ASIA_PACIFIC";
+
+export type NodeType = "ROUTER" | "SERVER";
+
 export interface Node {
   id: NodeId;
   label: string;
   x: number;
   y: number;
+  type: NodeType;
+  region?: WorldRegion;
+  capacity?: number;
+  currentLoad?: number;
+  isUp?: boolean;
 }
 
 export interface Link {
@@ -38,6 +47,9 @@ export interface MetricsSnapshot {
   delivered: number;
   bestPathLength: number;
   history: number[];
+  userCountsByServer: Record<string, number>;
+  avgLatencyByRegion: Record<WorldRegion, number>;
+  serverHealth: Record<string, "UP" | "DOWN" | "DEGRADED">;
 }
 
 export interface LinkSelection {
@@ -50,4 +62,19 @@ export interface SimulationSettings {
   autoReroute: boolean;
   showPaths: boolean;
   seed: number;
+  globalRouting: boolean;
+}
+
+export interface User {
+  userId: number;
+  region: WorldRegion;
+  connectedServerId: string | null;
+  lastLatency: number;
+}
+
+export interface IncidentEvent {
+  id: string;
+  message: string;
+  severity: "INFO" | "WARN" | "CRIT";
+  timestamp: number;
 }

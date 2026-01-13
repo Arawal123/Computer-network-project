@@ -1,51 +1,42 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import ControlPanel from "../components/ControlPanel";
+import IncidentFeed from "../components/IncidentFeed";
 import MetricsPanel from "../components/MetricsPanel";
 import NetworkCanvas, {
   LinkState,
   NetworkCanvasHandle
 } from "../components/NetworkCanvas";
 import TopBar from "../components/TopBar";
-import { LinkSelection, MetricsSnapshot, SimulationSettings } from "../lib/types";
-
-const defaultMetrics: MetricsSnapshot = {
-  deliveryRate: 100,
-  avgLatency: 0,
-  sentPerSecond: 0,
-  dropped: 0,
-  delivered: 0,
-  bestPathLength: 0,
-  history: []
-};
+import { useSimulationStore } from "../lib/store";
 
 export default function HomePage() {
   const canvasRef = useRef<NetworkCanvasHandle | null>(null);
-  const [running, setRunning] = useState(true);
-  const [autoReroute, setAutoReroute] = useState(true);
-  const [showPaths, setShowPaths] = useState(true);
-  const [seed, setSeed] = useState(1337);
-  const [selectedLink, setSelectedLink] = useState<LinkSelection | null>(null);
-  const [linkControls, setLinkControls] = useState<LinkState | null>(null);
-  const [metrics, setMetrics] = useState<MetricsSnapshot>(defaultMetrics);
-  const [narration, setNarration] = useState(
-    "Click a link to explore. Click two nodes to change the route."
-  );
+  const running = useSimulationStore((state) => state.running);
+  const settings = useSimulationStore((state) => state.settings);
+  const seed = useSimulationStore((state) => state.seed);
+  const selectedLink = useSimulationStore((state) => state.selectedLink);
+  const linkControls = useSimulationStore((state) => state.linkControls);
+  const metrics = useSimulationStore((state) => state.metrics);
+  const narration = useSimulationStore((state) => state.narration);
+  const incidents = useSimulationStore((state) => state.incidents);
+  const setRunning = useSimulationStore((state) => state.setRunning);
+  const setSeed = useSimulationStore((state) => state.setSeed);
+  const setSettings = useSimulationStore((state) => state.setSettings);
+  const setSelectedLink = useSimulationStore((state) => state.setSelectedLink);
+  const setLinkControls = useSimulationStore((state) => state.setLinkControls);
+  const setNarration = useSimulationStore((state) => state.setNarration);
+  const setMetrics = useSimulationStore((state) => state.setMetrics);
+  const addIncident = useSimulationStore((state) => state.addIncident);
 
-  const settings = useMemo<SimulationSettings>(
-    () => ({
-      autoReroute,
-      showPaths,
-      seed
-    }),
-    [autoReroute, showPaths, seed]
-  );
-
-  const handleSelectLink = (link: LinkSelection | null, state: LinkState | null) => {
-    setSelectedLink(link);
-    setLinkControls(state);
-  };
+  const busiestServerId = useMemo(() => {
+    const entries = Object.entries(metrics.userCountsByServer ?? {});
+    if (entries.length === 0) return "E";
+    return entries.reduce((best, current) =>
+      current[1] > best[1] ? current : best
+    )[0];
+  }, [metrics.userCountsByServer]);
 
   const handleUpdateLink = (changes: Partial<LinkState>) => {
     if (!selectedLink || !linkControls) return;
@@ -85,12 +76,26 @@ export default function HomePage() {
     const disabled = !linkControls.disabled;
     setLinkControls({ ...linkControls, disabled });
     canvasRef.current?.toggleLink(selectedLink.id, disabled);
+    addIncident(
+      `${disabled ? "Link disabled" : "Link restored"}: ${selectedLink.from} ↔ ${selectedLink.to}`,
+      disabled ? "WARN" : "INFO"
+    );
+  };
+
+  const handleServerDown = () => {
+    const status = metrics.serverHealth?.[busiestServerId] ?? "UP";
+    const isUp = status === "DOWN";
+    canvasRef.current?.setServerStatus(busiestServerId, isUp);
+  };
+
+  const handleIncreaseServerLoad = () => {
+    canvasRef.current?.addServerLoad(busiestServerId, 25);
   };
 
   return (
     <div className="min-h-screen flex flex-col bg-night">
       <TopBar />
-      <main className="flex-1 grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6 px-6 py-6">
+      <main className="flex-1 grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6 px-6 py-6">
         <section className="flex flex-col gap-6">
           <div className="glass rounded-3xl p-6 bg-radial-soft">
             <h2 className="text-2xl font-semibold text-white mb-2">
@@ -106,17 +111,20 @@ export default function HomePage() {
               ref={canvasRef}
               running={running}
               settings={settings}
-              onSelectLink={handleSelectLink}
+              onSelectLink={setSelectedLink}
               onMetrics={setMetrics}
               onNarration={setNarration}
+              onIncident={addIncident}
             />
           </div>
           <MetricsPanel metrics={metrics} />
+          <IncidentFeed incidents={incidents} />
         </section>
         <ControlPanel
           running={running}
-          autoReroute={autoReroute}
-          showPaths={showPaths}
+          autoReroute={settings.autoReroute}
+          showPaths={settings.showPaths}
+          globalRouting={settings.globalRouting}
           selectedLink={selectedLink}
           linkControls={linkControls}
           seed={seed}
@@ -126,11 +134,18 @@ export default function HomePage() {
           onRandomize={handleRandomize}
           onDemo={handleDemo}
           onChaos={handleChaos}
-          onToggleAutoReroute={() => setAutoReroute((prev) => !prev)}
-          onToggleShowPaths={() => setShowPaths((prev) => !prev)}
+          onToggleAutoReroute={() =>
+            setSettings({ autoReroute: !settings.autoReroute })
+          }
+          onToggleShowPaths={() => setSettings({ showPaths: !settings.showPaths })}
+          onToggleGlobalRouting={() =>
+            setSettings({ globalRouting: !settings.globalRouting })
+          }
           onUpdateLink={handleUpdateLink}
           onCutLink={handleCutLink}
           onSeedChange={setSeed}
+          onServerDown={handleServerDown}
+          onIncreaseServerLoad={handleIncreaseServerLoad}
         />
       </main>
     </div>
