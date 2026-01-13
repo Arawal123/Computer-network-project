@@ -368,7 +368,7 @@ export class NetworkSimulation {
 
       if (user.connectedServerId) {
         const server = servers.find((node) => node.id === user.connectedServerId);
-        if (server) {
+        if (server && server.region) {
           server.currentLoad = (server.currentLoad ?? 0) + 1;
           const baseLatency = this.getRegionLatency(user.region, server.region);
           const load = server.currentLoad ?? 0;
