@@ -53,7 +53,7 @@ export default function HomePage() {
 
   const handleReset = () => {
     canvasRef.current?.reset(seed);
-    setSelectedLink(null);
+    setSelectedLink(null, null);
     setLinkControls(null);
     setNarration("Simulation reset. Flow restored with fresh seed.");
   };
